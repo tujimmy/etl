@@ -1,0 +1,66 @@
+# =============================================================================
+# Marketing — Campaign Attribution
+# Inherits schedule + owner from marketing/defaults.yml
+# =============================================================================
+
+marketing_campaign_attribution:
+  description: "Daily campaign attribution model refresh"
+  tags: ["dag-factory", "marketing", "attribution"]
+
+  tasks:
+    extract_ad_spend:
+      operator: BigQueryInsertJobOperator
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.ad_spend_{{ ds_nodash }}`
+            AS
+            SELECT * FROM `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.ad_spend`
+            WHERE spend_date = '{{ ds }}'
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    extract_conversions:
+      operator: BigQueryInsertJobOperator
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.conversions_{{ ds_nodash }}`
+            AS
+            SELECT * FROM `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.conversions`
+            WHERE conversion_date = '{{ ds }}'
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    build_attribution:
+      operator: BigQueryInsertJobOperator
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.attribution_{{ ds_nodash }}`
+            AS
+            SELECT
+              c.campaign_id,
+              c.channel,
+              SUM(a.spend)        AS total_spend,
+              COUNT(cv.user_id)   AS conversions,
+              SAFE_DIVIDE(SUM(a.spend), COUNT(cv.user_id)) AS cost_per_conversion
+            FROM `${env.GCP_PROJECT:my-gcp-project}.marketing.ad_spend_{{ ds_nodash }}`    a
+            JOIN `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.campaigns`               c USING (campaign_id)
+            LEFT JOIN `${env.GCP_PROJECT:my-gcp-project}.marketing.conversions_{{ ds_nodash }}` cv USING (campaign_id)
+            GROUP BY 1, 2
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+      dependencies: [extract_ad_spend, extract_conversions]
+
+    notify_marketing:
+      operator: BashOperator
+      bash_command: >-
+        echo "Attribution model refreshed for {{ ds }}"
+      dependencies: [build_attribution]

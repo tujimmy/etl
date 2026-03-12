@@ -1,0 +1,23 @@
+# =============================================================================
+# Global Defaults — applied to ALL DAGs across all subdirectories
+# =============================================================================
+# Variable syntax:
+#   ${var.key}           → Airflow Variable
+#   ${var.key:fallback}  → Airflow Variable with default
+#   ${env.KEY}           → Composer / OS environment variable
+#   ${env.KEY:fallback}  → Env var with default
+#   {{ ds }}, {{ ts }}   → Standard Airflow Jinja (passed through at runtime)
+# =============================================================================
+
+schedule: "@daily"
+catchup: false
+tags: ["dag-factory"]
+
+default_args:
+  owner: "${var.dag_owner:data-engineering}"
+  start_date: "2025-01-01"
+  retries: 2
+  retry_delay: 300                       # seconds → timedelta(seconds=300)
+  email: "${var.alert_email:team@example.com}"
+  email_on_failure: true
+  email_on_retry: false

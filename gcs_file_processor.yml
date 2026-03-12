@@ -1,0 +1,46 @@
+# =============================================================================
+# GCS File Processing Pipeline
+# Demonstrates: GCS operators, PythonOperator with callable, env vars
+# =============================================================================
+
+gcs_file_processor:
+  description: "List, process, and archive files in a GCS bucket"
+  schedule: "0 */4 * * *"           # every 4 hours
+  tags: ["dag-factory", "gcs", "file-processing"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+    start_date: "2025-03-01"
+
+  tasks:
+    list_incoming_files:
+      operator: GCSListObjectsOperator
+      bucket: "${var.incoming_bucket:my-project-incoming}"
+      prefix: "uploads/{{ ds_nodash }}/"
+      gcp_conn_id: google_cloud_default
+
+    process_files:
+      operator: PythonOperator
+      python_callable: include.tasks.gcs_tasks.process_uploaded_files
+      op_kwargs:
+        project_id: "${env.GCP_PROJECT:my-gcp-project}"
+        bucket: "${var.incoming_bucket:my-project-incoming}"
+        dest_dataset: "${var.bq_dataset:analytics_raw}"
+      dependencies: [list_incoming_files]
+
+    archive_processed:
+      operator: GCSToGCSOperator
+      source_bucket: "${var.incoming_bucket:my-project-incoming}"
+      source_object: "uploads/{{ ds_nodash }}/*"
+      destination_bucket: "${var.archive_bucket:my-project-archive}"
+      destination_object: "processed/{{ ds_nodash }}/"
+      move_object: true
+      gcp_conn_id: google_cloud_default
+      dependencies: [process_files]
+
+    cleanup_temp:
+      operator: GCSDeleteObjectsOperator
+      bucket_name: "${var.incoming_bucket:my-project-incoming}"
+      prefix: "temp/{{ ds_nodash }}/"
+      gcp_conn_id: google_cloud_default
+      dependencies: [archive_processed]

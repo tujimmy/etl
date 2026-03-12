@@ -1,0 +1,91 @@
+# =============================================================================
+# Marketing -- Campaign Attribution
+# Inherits: configs/defaults.yml -> marketing/defaults.yml
+# Demonstrates: Nested task groups (etl.extraction, etl.transformation),
+#               group-level dependencies, prefix_group_id
+# =============================================================================
+
+marketing_campaign_attribution:
+  description: "Daily campaign attribution model refresh"
+  tags: ["dag-factory", "marketing", "attribution"]
+
+  # ------------------------------------------------------------------
+  # Nested Task Groups
+  # ------------------------------------------------------------------
+  task_groups:
+    etl:
+      tooltip: "Full ETL pipeline for attribution"
+      prefix_group_id: true
+      children:
+        extraction:
+          tooltip: "Extract ad spend and conversion data"
+          prefix_group_id: true
+        transformation:
+          tooltip: "Build attribution model"
+          prefix_group_id: true
+          dependencies: [extraction]
+    notification:
+      tooltip: "Notify stakeholders"
+      prefix_group_id: true
+      dependencies: [etl]
+
+  tasks:
+    extract_ad_spend:
+      operator: BigQueryInsertJobOperator
+      task_group_name: etl.extraction
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.ad_spend_{{ ds_nodash }}`
+            AS
+            SELECT * FROM `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.ad_spend`
+            WHERE spend_date = '{{ ds }}'
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    extract_conversions:
+      operator: BigQueryInsertJobOperator
+      task_group_name: etl.extraction
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.conversions_{{ ds_nodash }}`
+            AS
+            SELECT * FROM `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.conversions`
+            WHERE conversion_date = '{{ ds }}'
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    build_attribution:
+      operator: BigQueryInsertJobOperator
+      task_group_name: etl.transformation
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.marketing.attribution_{{ ds_nodash }}`
+            AS
+            SELECT
+              c.campaign_id,
+              c.channel,
+              SUM(a.spend)        AS total_spend,
+              COUNT(cv.user_id)   AS conversions,
+              SAFE_DIVIDE(SUM(a.spend), COUNT(cv.user_id)) AS cost_per_conversion
+            FROM `${env.GCP_PROJECT:my-gcp-project}.marketing.ad_spend_{{ ds_nodash }}`    a
+            JOIN `${env.GCP_PROJECT:my-gcp-project}.marketing_raw.campaigns`               c USING (campaign_id)
+            LEFT JOIN `${env.GCP_PROJECT:my-gcp-project}.marketing.conversions_{{ ds_nodash }}` cv USING (campaign_id)
+            GROUP BY 1, 2
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+      dependencies: [extract_ad_spend, extract_conversions]
+
+    notify_marketing:
+      operator: BashOperator
+      task_group_name: notification
+      bash_command: >-
+        echo "Attribution model refreshed for {{ ds }}"

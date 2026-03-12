@@ -1,0 +1,115 @@
+# =============================================================================
+# BigQuery ETL Pipeline
+# Demonstrates: Task groups (load/transform/validate/export phases),
+#               Airflow vars, Composer env vars, GCP operator aliases,
+#               Jinja templating, task dependencies
+# =============================================================================
+
+default:
+  start_date: "2025-01-01"
+
+bq_daily_etl:
+  description: "Daily BigQuery ETL -- loads raw data, transforms, validates"
+  schedule: "${var.bq_etl_schedule:0 6 * * *}"
+  tags: ["dag-factory", "bigquery", "etl"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+
+  # ------------------------------------------------------------------
+  # Task Groups — organize pipeline into phases
+  # ------------------------------------------------------------------
+  task_groups:
+    ingestion:
+      tooltip: "Load raw data from GCS into BigQuery"
+      prefix_group_id: true
+    transformation:
+      tooltip: "Transform and enrich data in BigQuery"
+      prefix_group_id: true
+      dependencies: [ingestion]
+    validation:
+      tooltip: "Data quality checks"
+      prefix_group_id: true
+      dependencies: [transformation]
+    export:
+      tooltip: "Export results to GCS and notify"
+      prefix_group_id: true
+      dependencies: [validation]
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Ingestion group
+    # ------------------------------------------------------------------
+    load_raw_events:
+      operator: GCSToBigQueryOperator
+      task_group_name: ingestion
+      bucket: "${var.raw_bucket:my-project-raw}"
+      source_objects: ["events/{{ ds_nodash }}/*.parquet"]
+      source_format: PARQUET
+      destination_project_dataset_table: >-
+        ${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics_raw}.raw_events${{ ds_nodash }}
+      write_disposition: WRITE_TRUNCATE
+      time_partitioning:
+        type: DAY
+        field: event_date
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # Transformation group
+    # ------------------------------------------------------------------
+    transform_events:
+      operator: BigQueryInsertJobOperator
+      task_group_name: transformation
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}`
+            AS
+            SELECT
+              event_id,
+              user_id,
+              event_type,
+              TIMESTAMP_MICROS(event_timestamp) AS event_ts,
+              CURRENT_TIMESTAMP()               AS processed_at
+            FROM
+              `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics_raw}.raw_events`
+            WHERE
+              DATE(_PARTITIONTIME) = '{{ ds }}'
+          useLegacySql: false
+          priority: BATCH
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # Validation group
+    # ------------------------------------------------------------------
+    check_row_count:
+      operator: BigQueryCheckOperator
+      task_group_name: validation
+      sql: >-
+        SELECT COUNT(*) > 0
+        FROM `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}`
+      use_legacy_sql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # Export group
+    # ------------------------------------------------------------------
+    export_to_gcs:
+      operator: BigQueryToGCSOperator
+      task_group_name: export
+      source_project_dataset_table: >-
+        ${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}
+      destination_cloud_storage_uris:
+        - "gs://${var.export_bucket:my-project-export}/daily_events/{{ ds_nodash }}/*.parquet"
+      export_format: PARQUET
+      gcp_conn_id: google_cloud_default
+
+    notify_success:
+      operator: BashOperator
+      task_group_name: export
+      bash_command: >-
+        echo "BQ ETL complete for {{ ds }} in project ${env.GCP_PROJECT:my-gcp-project}"
+      dependencies: [export_to_gcs]

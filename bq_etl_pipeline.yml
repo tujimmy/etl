@@ -1,0 +1,95 @@
+# =============================================================================
+# BigQuery ETL Pipeline
+# Demonstrates: Airflow vars, Composer env vars, GCP operator aliases,
+#               Jinja templating, task dependencies
+# =============================================================================
+
+default:
+  start_date: "2025-01-01"
+
+bq_daily_etl:
+  description: "Daily BigQuery ETL — loads raw data, transforms, validates"
+  schedule: "${var.bq_etl_schedule:0 6 * * *}"
+  tags: ["dag-factory", "bigquery", "etl"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. Load raw data from GCS → BigQuery
+    # ------------------------------------------------------------------
+    load_raw_events:
+      operator: GCSToBigQueryOperator
+      bucket: "${var.raw_bucket:my-project-raw}"
+      source_objects: ["events/{{ ds_nodash }}/*.parquet"]
+      source_format: PARQUET
+      destination_project_dataset_table: >-
+        ${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics_raw}.raw_events${{ ds_nodash }}
+      write_disposition: WRITE_TRUNCATE
+      time_partitioning:
+        type: DAY
+        field: event_date
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # 2. Transform with a BigQuery SQL query
+    # ------------------------------------------------------------------
+    transform_events:
+      operator: BigQueryInsertJobOperator
+      configuration:
+        query:
+          query: >-
+            CREATE OR REPLACE TABLE
+              `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}`
+            AS
+            SELECT
+              event_id,
+              user_id,
+              event_type,
+              TIMESTAMP_MICROS(event_timestamp) AS event_ts,
+              CURRENT_TIMESTAMP()               AS processed_at
+            FROM
+              `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics_raw}.raw_events`
+            WHERE
+              DATE(_PARTITIONTIME) = '{{ ds }}'
+          useLegacySql: false
+          priority: BATCH
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+      dependencies: [load_raw_events]
+
+    # ------------------------------------------------------------------
+    # 3. Data quality check
+    # ------------------------------------------------------------------
+    check_row_count:
+      operator: BigQueryCheckOperator
+      sql: >-
+        SELECT COUNT(*) > 0
+        FROM `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}`
+      use_legacy_sql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+      dependencies: [transform_events]
+
+    # ------------------------------------------------------------------
+    # 4. Export results to GCS for downstream consumers
+    # ------------------------------------------------------------------
+    export_to_gcs:
+      operator: BigQueryToGCSOperator
+      source_project_dataset_table: >-
+        ${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics}.daily_events_{{ ds_nodash }}
+      destination_cloud_storage_uris:
+        - "gs://${var.export_bucket:my-project-export}/daily_events/{{ ds_nodash }}/*.parquet"
+      export_format: PARQUET
+      gcp_conn_id: google_cloud_default
+      dependencies: [check_row_count]
+
+    # ------------------------------------------------------------------
+    # 5. Notify completion
+    # ------------------------------------------------------------------
+    notify_success:
+      operator: BashOperator
+      bash_command: >-
+        echo "BQ ETL complete for {{ ds }} in project ${env.GCP_PROJECT:my-gcp-project}"
+      dependencies: [export_to_gcs]

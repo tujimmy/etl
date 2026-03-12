@@ -1,0 +1,11 @@
+# =============================================================================
+# Marketing Department Defaults
+# Inherits from: configs/defaults.yml
+# Overrides: schedule, owner, email
+# =============================================================================
+
+schedule: "0 2 * * *"   # 2 AM daily (after upstream ETL completes)
+
+default_args:
+  owner: "${var.marketing_owner:marketing-analytics}"
+  email: "${var.marketing_alert_email:marketing-data@example.com}"

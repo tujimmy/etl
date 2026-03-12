@@ -1,0 +1,69 @@
+# =============================================================================
+# Finance -- Revenue Reconciliation
+# Inherits: configs/defaults.yml -> finance/defaults.yml (3 retries)
+# Demonstrates: Task groups with group-level default_args overrides
+# =============================================================================
+
+finance_revenue_reconciliation:
+  description: "Daily revenue reconciliation between billing and payments"
+  tags: ["dag-factory", "finance", "reconciliation"]
+
+  # ------------------------------------------------------------------
+  # Task Groups
+  # ------------------------------------------------------------------
+  task_groups:
+    extraction:
+      tooltip: "Extract billing and payment data"
+      prefix_group_id: true
+      default_args:
+        retries: 4   # extra retries for critical financial data extraction
+    reconciliation:
+      tooltip: "Run reconciliation logic"
+      prefix_group_id: true
+      dependencies: [extraction]
+
+  tasks:
+    extract_billing:
+      operator: BigQueryInsertJobOperator
+      task_group_name: extraction
+      configuration:
+        query:
+          query: >-
+            SELECT invoice_id, customer_id, amount, currency, invoice_date
+            FROM `${env.GCP_PROJECT:my-gcp-project}.billing.invoices`
+            WHERE invoice_date = '{{ ds }}'
+          useLegacySql: false
+          destinationTable:
+            projectId: "${env.GCP_PROJECT:my-gcp-project}"
+            datasetId: "finance_staging"
+            tableId: "billing_{{ ds_nodash }}"
+          writeDisposition: WRITE_TRUNCATE
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    extract_payments:
+      operator: BigQueryInsertJobOperator
+      task_group_name: extraction
+      configuration:
+        query:
+          query: >-
+            SELECT payment_id, invoice_id, amount_paid, payment_date, status
+            FROM `${env.GCP_PROJECT:my-gcp-project}.payments.transactions`
+            WHERE payment_date = '{{ ds }}'
+          useLegacySql: false
+          destinationTable:
+            projectId: "${env.GCP_PROJECT:my-gcp-project}"
+            datasetId: "finance_staging"
+            tableId: "payments_{{ ds_nodash }}"
+          writeDisposition: WRITE_TRUNCATE
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    reconcile:
+      operator: PythonOperator
+      task_group_name: reconciliation
+      python_callable: include.tasks.finance_tasks.reconcile_revenue
+      op_kwargs:
+        project_id: "${env.GCP_PROJECT:my-gcp-project}"
+        run_date: "{{ ds }}"
+        threshold: "${var.reconciliation_threshold:0.01}"

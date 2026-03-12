@@ -1,0 +1,46 @@
+# =============================================================================
+# Dataflow Pipeline
+# Demonstrates: Dataflow operators, Composer env vars for project/region,
+#               complex nested variable resolution
+# =============================================================================
+
+dataflow_streaming_ingest:
+  description: "Launch a Dataflow Flex Template for streaming ingestion"
+  schedule: null   # triggered externally or via asset
+  tags: ["dag-factory", "dataflow", "streaming"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+    start_date: "2025-01-01"
+    retries: 1
+
+  tasks:
+    launch_flex_template:
+      operator: DataflowStartFlexTemplateOperator
+      project_id: "${env.GCP_PROJECT:my-gcp-project}"
+      location: "${env.COMPOSER_REGION:us-central1}"
+      body:
+        launchParameter:
+          jobName: "ingest-events-{{ ds_nodash }}"
+          containerSpecGcsPath: "gs://${var.dataflow_templates_bucket:my-templates}/flex/ingest-events.json"
+          parameters:
+            inputTopic: "projects/${env.GCP_PROJECT:my-gcp-project}/topics/${var.pubsub_topic:raw-events}"
+            outputTable: "${env.GCP_PROJECT:my-gcp-project}:${var.bq_dataset:analytics_raw}.streaming_events"
+            tempLocation: "gs://${var.dataflow_temp_bucket:my-df-temp}/temp"
+          environment:
+            serviceAccountEmail: "${var.dataflow_sa:dataflow-runner@my-gcp-project.iam.gserviceaccount.com}"
+            network: "${var.vpc_network:default}"
+            subnetwork: "${var.vpc_subnet:regions/us-central1/subnetworks/default}"
+            maxWorkers: 10
+      gcp_conn_id: google_cloud_default
+
+    verify_output:
+      operator: BigQueryCheckOperator
+      sql: >-
+        SELECT COUNT(*) > 0
+        FROM `${env.GCP_PROJECT:my-gcp-project}.${var.bq_dataset:analytics_raw}.streaming_events`
+        WHERE DATE(ingest_time) = '{{ ds }}'
+      use_legacy_sql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+      dependencies: [launch_flex_template]

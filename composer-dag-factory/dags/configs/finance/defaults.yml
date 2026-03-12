@@ -1,0 +1,12 @@
+# =============================================================================
+# Finance Department Defaults
+# Inherits from: configs/defaults.yml
+# Overrides: owner, retries, email
+# =============================================================================
+
+schedule: "0 3 * * *"   # 3 AM daily
+
+default_args:
+  owner: "${var.finance_owner:finance-analytics}"
+  retries: 3             # finance pipelines get an extra retry
+  email: "${var.finance_alert_email:finance-data@example.com}"

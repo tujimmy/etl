@@ -1,0 +1,102 @@
+# =============================================================================
+# Advanced Operators Example
+# Demonstrates:
+#   1. Using operators NOT in the alias list (full import path)
+#   2. Using custom operators from plugins/
+#   3. Mixing aliases, full paths, and custom operators in one DAG
+# =============================================================================
+
+advanced_operators_demo:
+  description: "Shows how to use any operator — alias, full path, or custom"
+  schedule: "@daily"
+  tags: ["dag-factory", "example", "advanced"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+    start_date: "2025-01-01"
+
+  task_groups:
+    extract:
+      tooltip: "Extract data from various sources"
+      prefix_group_id: true
+    validate:
+      tooltip: "Run quality checks"
+      prefix_group_id: true
+      dependencies: [extract]
+    notify:
+      tooltip: "Send notifications"
+      prefix_group_id: true
+      dependencies: [validate]
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. ALIAS — short name from GCP_OPERATOR_ALIASES
+    # ------------------------------------------------------------------
+    load_bq_data:
+      operator: BigQueryInsertJobOperator           # <-- alias
+      task_group_name: extract
+      configuration:
+        query:
+          query: "SELECT * FROM `${env.GCP_PROJECT:my-gcp-project}.raw.events` WHERE date = '{{ ds }}'"
+          useLegacySql: false
+      location: "${var.bq_location:US}"
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # 2. FULL PATH — operator not in alias list, use full import path
+    # ------------------------------------------------------------------
+    invoke_cloud_function:
+      operator: airflow.providers.google.cloud.operators.functions.CloudFunctionInvokeFunctionOperator
+      task_group_name: extract
+      project_id: "${env.GCP_PROJECT:my-gcp-project}"
+      location: "${env.COMPOSER_REGION:us-central1}"
+      input_data: {}
+      function_id: "process-events"
+      gcp_conn_id: google_cloud_default
+
+    call_rest_api:
+      operator: airflow.providers.http.operators.http.HttpOperator
+      task_group_name: extract
+      http_conn_id: my_api_connection
+      endpoint: "/api/v1/data/{{ ds }}"
+      method: "GET"
+
+    send_pubsub:
+      operator: airflow.providers.google.cloud.operators.pubsub.PubSubPublishMessageOperator
+      task_group_name: extract
+      project_id: "${env.GCP_PROJECT:my-gcp-project}"
+      topic: "${var.pubsub_topic:raw-events}"
+      messages:
+        - data: "{{ ds }}"
+      gcp_conn_id: google_cloud_default
+
+    # ------------------------------------------------------------------
+    # 3. CUSTOM OPERATOR — from plugins/custom_operators/
+    #    (place your Python file in plugins/ — Composer auto-loads it)
+    # ------------------------------------------------------------------
+    quality_check:
+      operator: custom_operators.quality_check.DataQualityOperator
+      task_group_name: validate
+      table: "${env.GCP_PROJECT:my-gcp-project}.analytics.daily_events_{{ ds_nodash }}"
+      checks:
+        - row_count_gt_zero
+        - no_nulls_in_pk
+        - values_in_range
+
+    # ------------------------------------------------------------------
+    # 4. FULL PATH — Slack/Teams notification (not in alias list)
+    # ------------------------------------------------------------------
+    notify_slack:
+      operator: airflow.providers.slack.operators.slack_webhook.SlackWebhookOperator
+      task_group_name: notify
+      slack_webhook_conn_id: slack_default
+      message: >-
+        Pipeline complete for {{ ds }}
+        Project: ${env.GCP_PROJECT:my-gcp-project}
+
+    send_email:
+      operator: EmailOperator                       # <-- alias
+      task_group_name: notify
+      to: "${var.alert_email:team@example.com}"
+      subject: "DAG {{ dag.dag_id }} succeeded for {{ ds }}"
+      html_content: "<p>All tasks completed successfully.</p>"
