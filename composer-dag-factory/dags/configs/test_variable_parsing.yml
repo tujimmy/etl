@@ -1,0 +1,94 @@
+# =============================================================================
+# Test Variable Parsing
+# A simple DAG that echoes all variable types to verify resolution works.
+# Check task logs in Airflow UI to confirm values.
+# =============================================================================
+
+test_variable_parsing:
+  description: "Echo all variable types to verify DAG factory parsing"
+  schedule: null   # manual trigger only
+  tags: ["dag-factory", "test", "variables"]
+
+  default_args:
+    owner: "${var.dag_owner:data-engineering}"
+    start_date: "2025-01-01"
+    retries: 0
+
+  tasks:
+    # ------------------------------------------------------------------
+    # 1. Airflow Variables — ${var.key:default}
+    # ------------------------------------------------------------------
+    echo_airflow_vars:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Airflow Variables (resolved at parse time) ==="
+        echo "dag_owner:       ${var.dag_owner:MISSING_dag_owner}"
+        echo "alert_email:     ${var.alert_email:MISSING_alert_email}"
+        echo "bq_dataset:      ${var.bq_dataset:MISSING_bq_dataset}"
+        echo "bq_location:     ${var.bq_location:MISSING_bq_location}"
+        echo "raw_bucket:      ${var.raw_bucket:MISSING_raw_bucket}"
+
+    # ------------------------------------------------------------------
+    # 2. Composer / OS Environment Variables — ${env.KEY:default}
+    # ------------------------------------------------------------------
+    echo_env_vars:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Composer Env Vars (resolved at parse time) ==="
+        echo "GCP_PROJECT:     ${env.GCP_PROJECT:MISSING_GCP_PROJECT}"
+        echo "COMPOSER_REGION: ${env.COMPOSER_LOCATION:MISSING_COMPOSER_LOCATION}"
+        echo "COMPOSER_ENV:    ${env.COMPOSER_ENVIRONMENT:MISSING_COMPOSER_ENVIRONMENT}"
+        echo "DAGS_FOLDER:     ${env.DAGS_FOLDER:MISSING_DAGS_FOLDER}"
+      dependencies: [echo_airflow_vars]
+
+    # ------------------------------------------------------------------
+    # 3. Jinja Templates — {{ }} (resolved at runtime by Airflow)
+    # ------------------------------------------------------------------
+    echo_jinja_vars:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Jinja Templates (resolved at task runtime) ==="
+        echo "ds:              {{ ds }}"
+        echo "ds_nodash:       {{ ds_nodash }}"
+        echo "ts:              {{ ts }}"
+        echo "dag_id:          {{ dag.dag_id }}"
+        echo "task_id:         {{ task.task_id }}"
+        echo "run_id:          {{ run_id }}"
+        echo "logical_date:    {{ logical_date }}"
+      dependencies: [echo_env_vars]
+
+    # ------------------------------------------------------------------
+    # 4. Mixed — all three types in one string
+    # ------------------------------------------------------------------
+    echo_mixed:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Mixed Variables ==="
+        echo "BQ table: ${env.GCP_PROJECT:my-project}.${var.bq_dataset:analytics}.events_{{ ds_nodash }}"
+        echo "GCS path: gs://${var.raw_bucket:my-bucket}/data/{{ ds_nodash }}/"
+        echo "Full ref: projects/${env.GCP_PROJECT:my-project}/topics/${var.pubsub_topic:raw-events}"
+      dependencies: [echo_jinja_vars]
+
+    # ------------------------------------------------------------------
+    # 5. Nested dict/list — verify deep resolution
+    # ------------------------------------------------------------------
+    echo_nested:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Nested Resolution ==="
+        echo "If you see this, the nested dict/list below resolved without error"
+        echo "project: ${env.GCP_PROJECT:my-project}"
+        echo "dataset: ${var.bq_dataset:analytics}"
+      dependencies: [echo_mixed]
+
+    # ------------------------------------------------------------------
+    # 6. Fallback defaults — vars that don't exist, should show defaults
+    # ------------------------------------------------------------------
+    echo_fallbacks:
+      operator: BashOperator
+      bash_command: |
+        echo "=== Fallback Defaults (these vars should NOT exist) ==="
+        echo "fake_var:        ${var.this_var_does_not_exist:FALLBACK_OK}"
+        echo "fake_env:        ${env.THIS_ENV_DOES_NOT_EXIST:FALLBACK_OK}"
+        echo "Both should print FALLBACK_OK"
+      dependencies: [echo_nested]
