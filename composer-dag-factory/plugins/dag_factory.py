@@ -178,6 +178,7 @@ GCP_OPERATOR_ALIASES: dict[str, str] = {
     "PubSubPublishMessageOperator": "airflow.providers.google.cloud.operators.pubsub.PubSubPublishMessageOperator",
     "CloudRunExecuteJobOperator": "airflow.providers.google.cloud.operators.cloud_run.CloudRunExecuteJobOperator",
     "GKEStartPodOperator": "airflow.providers.google.cloud.operators.kubernetes_engine.GKEStartPodOperator",
+    "KubernetesPodOperator": "airflow.providers.cncf.kubernetes.operators.pod.KubernetesPodOperator",
     "BashOperator": "airflow.operators.bash.BashOperator",
     "PythonOperator": "airflow.operators.python.PythonOperator",
     "EmailOperator": "airflow.operators.email.EmailOperator",
@@ -356,7 +357,7 @@ def _build_task(
 _DAG_META_KEYS = {"tasks", "task_groups", "default_args"}
 
 
-def _build_dag(dag_id: str, dag_conf: dict) -> DAG:
+def _build_dag(dag_id: str, dag_conf: dict, source_yaml: str | None = None) -> DAG:
     """Build a single DAG object from its resolved YAML configuration."""
     conf = copy.deepcopy(dag_conf)
 
@@ -389,6 +390,10 @@ def _build_dag(dag_id: str, dag_conf: dict) -> DAG:
         catchup=dag_kwargs.pop("catchup", False),
         **dag_kwargs,
     )
+
+    # ---- Embed YAML source as DAG Docs (visible in Airflow UI) ----
+    if source_yaml:
+        dag.doc_md = f"## Source YAML\n\n```yaml\n{source_yaml}\n```"
 
     # ---- Build task groups ----
     group_objects: dict[str, TaskGroup] = {}
@@ -528,6 +533,8 @@ def load_yaml_dags(
 
         try:
             raw_config = _load_yaml(filepath)
+            with open(filepath, "r") as f:
+                raw_yaml_text = f.read()
         except Exception:
             log.exception("Failed to load YAML file: %s", filepath)
             continue
@@ -548,7 +555,7 @@ def load_yaml_dags(
             merged = _deep_merge(defaults, dag_conf)
 
             try:
-                dag = _build_dag(dag_id, merged)
+                dag = _build_dag(dag_id, merged, source_yaml=raw_yaml_text)
                 globals_dict[dag_id] = dag
                 log.info("DAG Factory: created DAG '%s' from %s", dag_id, filepath)
             except Exception:
