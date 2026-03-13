@@ -63,6 +63,51 @@ _VAR_PATTERN = re.compile(
     r"\$\{(?P<source>var|env)\.(?P<key>[A-Za-z0-9_.\-]+)(?::(?P<default>[^}]*))?\}"
 )
 
+# ---------------------------------------------------------------------------
+# Composer environment variable aliases
+# ---------------------------------------------------------------------------
+# Composer 2 uses different env var names than you might expect. This mapping
+# lets you write ${env.GCP_PROJECT} in YAML even though the actual OS env var
+# is GOOGLE_CLOUD_PROJECT. The resolver tries keys in order:
+#   1. The exact key as written           (e.g. GCP_PROJECT)
+#   2. All aliases for that key           (e.g. GOOGLE_CLOUD_PROJECT, GCLOUD_PROJECT)
+#   3. The AIRFLOW_VAR_ prefixed version  (e.g. AIRFLOW_VAR_GCP_PROJECT)
+#   4. The fallback default               (e.g. :my-gcp-project)
+
+_ENV_ALIASES: dict[str, list[str]] = {
+    "GCP_PROJECT": ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GCP_PROJECT_ID", "DEVSHELL_PROJECT_ID"],
+    "COMPOSER_REGION": ["COMPOSER_LOCATION"],
+    "COMPOSER_LOCATION": ["COMPOSER_REGION"],
+}
+
+
+def _resolve_env(key: str) -> str | None:
+    """
+    Look up an environment variable by key, trying multiple fallback names.
+
+    Resolution order:
+      1. os.environ[key]                    — exact match
+      2. os.environ[alias]                  — Composer name aliases
+      3. os.environ[AIRFLOW_VAR_{key}]      — Composer env var override prefix
+    """
+    # 1. Exact match
+    val = os.environ.get(key)
+    if val is not None:
+        return val
+
+    # 2. Try known aliases
+    for alias in _ENV_ALIASES.get(key, []):
+        val = os.environ.get(alias)
+        if val is not None:
+            return val
+
+    # 3. Try AIRFLOW_VAR_ prefix (Composer sets custom env vars this way in some versions)
+    val = os.environ.get(f"AIRFLOW_VAR_{key}")
+    if val is not None:
+        return val
+
+    return None
+
 
 def _resolve_variables(value: Any) -> Any:
     """Recursively resolve ${var.*} and ${env.*} placeholders in a config tree."""
@@ -93,12 +138,18 @@ def _resolve_string(text: str) -> str:
                 return match.group(0)  # leave placeholder as-is
 
         if source == "env":
-            env_val = os.environ.get(key)
+            env_val = _resolve_env(key)
             if env_val is not None:
                 return env_val
             if default is not None:
                 return default
-            log.warning("Environment variable '%s' not found and no default set", key)
+            log.warning(
+                "Environment variable '%s' not found (also tried aliases: %s, AIRFLOW_VAR_%s) "
+                "and no default set",
+                key,
+                _ENV_ALIASES.get(key, []),
+                key,
+            )
             return match.group(0)
 
         return match.group(0)

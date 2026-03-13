@@ -39,6 +39,9 @@ test_variable_parsing:
         echo "COMPOSER_REGION: ${env.COMPOSER_LOCATION:MISSING_COMPOSER_LOCATION}"
         echo "COMPOSER_ENV:    ${env.COMPOSER_ENVIRONMENT:MISSING_COMPOSER_ENVIRONMENT}"
         echo "DAGS_FOLDER:     ${env.DAGS_FOLDER:MISSING_DAGS_FOLDER}"
+        echo ""
+        echo "=== DEBUG: Dump actual Composer env vars ==="
+        env | grep -iE '(COMPOSER|GOOGLE|GCP|GCLOUD|PROJECT|AIRFLOW_VAR)' | sort || true
       dependencies: [echo_airflow_vars]
 
     # ------------------------------------------------------------------
